@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strings"
+	"net/url"
 	"os"
 	"path/filepath"
-	"net/url"
 	"strconv"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -20,6 +20,7 @@ func handleClient(conn net.Conn, db *sql.DB) {
 
 	reader := bufio.NewReader(conn)
 
+	// Leer request line
 	requestLine, err := reader.ReadString('\n')
 	if err != nil {
 		return
@@ -30,11 +31,24 @@ func handleClient(conn net.Conn, db *sql.DB) {
 		return
 	}
 
+	method := parts[0]
 	path := parts[1]
+
+	// Leer headers y capturar Content-Length
+	contentLength := 0
 
 	for {
 		line, err := reader.ReadString('\n')
-		if err != nil || line == "\r\n" {
+		if err != nil {
+			return
+		}
+
+		if strings.HasPrefix(line, "Content-Length:") {
+			lengthStr := strings.TrimSpace(strings.TrimPrefix(line, "Content-Length:"))
+			contentLength, _ = strconv.Atoi(lengthStr)
+		}
+
+		if line == "\r\n" {
 			break
 		}
 	}
@@ -43,6 +57,7 @@ func handleClient(conn net.Conn, db *sql.DB) {
 	page := 1
 	sortColumn := ""
 
+	// Parsear query params
 	if strings.Contains(path, "?") {
 		parts := strings.SplitN(path, "?", 2)
 		route = parts[0]
@@ -63,28 +78,18 @@ func handleClient(conn net.Conn, db *sql.DB) {
 	limit := 5
 	offset := (page - 1) * limit
 
-	// Servir archivos estáticos
+	// SERVIR ESTÁTICOS
 	if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
 
 		filePath := "." + path
-
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			body := "File not found"
-			response :=
-				"HTTP/1.1 404 Not Found\r\n" +
-					"Content-Type: text/plain\r\n" +
-					fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
-					"\r\n" +
-					body
-
-			conn.Write([]byte(response))
 			return
 		}
 
 		ext := filepath.Ext(filePath)
-
 		contentType := "text/plain"
+
 		if ext == ".css" {
 			contentType = "text/css"
 		} else if ext == ".png" {
@@ -106,6 +111,84 @@ func handleClient(conn net.Conn, db *sql.DB) {
 		return
 	}
 
+	// GET /create
+	if route == "/create" && method == "GET" {
+
+		html := "<html><head><title>Create Series</title></head><body>"
+		html += "<h1>Add New Series</h1>"
+		html += "<form method='POST' action='/create'>"
+		html += "Name: <input type='text' name='series_name' required><br><br>"
+		html += "Current Episode: <input type='number' name='current_episode' min='1' value='1' required><br><br>"
+		html += "Total Episodes: <input type='number' name='total_episodes' min='1' required><br><br>"
+		html += "<button type='submit'>Add</button>"
+		html += "</form>"
+		html += "<br><a href='/'>Back</a>"
+		html += "</body></html>"
+
+		response :=
+			"HTTP/1.1 200 OK\r\n" +
+				"Content-Type: text/html\r\n" +
+				fmt.Sprintf("Content-Length: %d\r\n", len(html)) +
+				"\r\n" +
+				html
+
+		conn.Write([]byte(response))
+		return
+	}
+
+	// POST /create
+	if route == "/create" && method == "POST" {
+
+		bodyBytes := make([]byte, contentLength)
+		_, err := reader.Read(bodyBytes)
+		if err != nil {
+			return
+		}
+
+		body := string(bodyBytes)
+
+		values, _ := url.ParseQuery(body)
+
+		name := values.Get("series_name")
+		current := values.Get("current_episode")
+		total := values.Get("total_episodes")
+
+		db.Exec(
+			"INSERT INTO series (name, current_episode, total_episodes) VALUES (?, ?, ?)",
+			name, current, total,
+		)
+
+		response :=
+			"HTTP/1.1 303 See Other\r\n" +
+				"Location: /\r\n\r\n"
+
+		conn.Write([]byte(response))
+		return
+	}
+
+	// POST /update
+	if route == "/update" && method == "POST" {
+
+		parts := strings.SplitN(path, "?", 2)
+		if len(parts) > 1 {
+			params, _ := url.ParseQuery(parts[1])
+			id := params.Get("id")
+
+			db.Exec(
+				"UPDATE series SET current_episode = current_episode + 1 WHERE id = ? AND current_episode < total_episodes",
+				id,
+			)
+		}
+
+		response :=
+			"HTTP/1.1 200 OK\r\n" +
+				"Content-Type: text/plain\r\n\r\nok"
+
+		conn.Write([]byte(response))
+		return
+	}
+
+	// 404
 	if route != "/" {
 		body := "<html><body><h1>404 Not Found</h1></body></html>"
 		response :=
@@ -119,7 +202,7 @@ func handleClient(conn net.Conn, db *sql.DB) {
 		return
 	}
 
-	// ORDER BY seguro
+	// ORDER BY
 	orderBy := ""
 
 	if sortColumn == "name" {
@@ -141,16 +224,14 @@ func handleClient(conn net.Conn, db *sql.DB) {
 	html := "<html><head><title>Series</title><link rel='stylesheet' href='/static/style.css'></head><body>"
 
 	html += "<div class='pagination'>"
-
 	if page > 1 {
 		html += fmt.Sprintf("<a href='/?page=%d'>Previous</a>", page-1)
 	}
-
 	html += fmt.Sprintf("<a href='/?page=%d'>Next</a>", page+1)
-
 	html += "</div>"
 
 	html += "<h1>Series que he visto (o estoy viendo)</h1>"
+	html += "<a href='/create'>Add New Series</a><br><br>"
 	html += "<table>"
 	html += "<tr>"
 	html += "<th>ID</th>"
@@ -169,12 +250,22 @@ func handleClient(conn net.Conn, db *sql.DB) {
 		progress := fmt.Sprintf("%d / %d", current, total)
 
 		html += fmt.Sprintf(
-			"<tr><td>%d</td><td>%s</td><td>%s</td></tr>",
-			id, name, progress,
+			"<tr><td>%d</td><td>%s</td><td>%s <button onclick='nextEpisode(%d)'>+1</button></td></tr>",
+			id, name, progress, id,
 		)
 	}
 
 	html += "</table>"
+
+	html += `
+	<script>
+	async function nextEpisode(id) {
+		await fetch("/update?id=" + id, { method: "POST" });
+		location.reload();
+	}
+	</script>
+	`
+
 	html += "</body></html>"
 
 	response :=

@@ -35,4 +35,4 @@ Funcionalidades del sistema.
 Screenshot.
 
     La siguiente imagen muestra el servidor en funcionamiento:
-    ![Server Running](screenshot.png)
+    ![Server Running](./screenshot.png)

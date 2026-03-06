@@ -39,69 +39,72 @@ func handleClient(conn net.Conn, db *sql.DB) {
 		}
 	}
 
-route := path
-page := 1
+	route := path
+	page := 1
+	sortColumn := ""
 
-if strings.Contains(path, "?") {
-	parts := strings.SplitN(path, "?", 2)
-	route = parts[0]
+	if strings.Contains(path, "?") {
+		parts := strings.SplitN(path, "?", 2)
+		route = parts[0]
 
-	params, _ := url.ParseQuery(parts[1])
-	pageStr := params.Get("page")
+		params, _ := url.ParseQuery(parts[1])
 
-	if pageStr != "" {
-		p, err := strconv.Atoi(pageStr)
-		if err == nil && p > 0 {
-			page = p
+		pageStr := params.Get("page")
+		if pageStr != "" {
+			p, err := strconv.Atoi(pageStr)
+			if err == nil && p > 0 {
+				page = p
+			}
 		}
-	}
-}
 
-limit := 5
-offset := (page - 1) * limit	
+		sortColumn = params.Get("sort")
+	}
+
+	limit := 5
+	offset := (page - 1) * limit
 
 	// Servir archivos estáticos
-if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
+	if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
 
-	filePath := "." + path
+		filePath := "." + path
 
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		body := "File not found"
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			body := "File not found"
+			response :=
+				"HTTP/1.1 404 Not Found\r\n" +
+					"Content-Type: text/plain\r\n" +
+					fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
+					"\r\n" +
+					body
+
+			conn.Write([]byte(response))
+			return
+		}
+
+		ext := filepath.Ext(filePath)
+
+		contentType := "text/plain"
+		if ext == ".css" {
+			contentType = "text/css"
+		} else if ext == ".png" {
+			contentType = "image/png"
+		} else if ext == ".jpg" || ext == ".jpeg" {
+			contentType = "image/jpeg"
+		} else if ext == ".ico" {
+			contentType = "image/x-icon"
+		}
+
 		response :=
-			"HTTP/1.1 404 Not Found\r\n" +
-				"Content-Type: text/plain\r\n" +
-				fmt.Sprintf("Content-Length: %d\r\n", len(body)) +
-				"\r\n" +
-				body
+			"HTTP/1.1 200 OK\r\n" +
+				"Content-Type: " + contentType + "\r\n" +
+				fmt.Sprintf("Content-Length: %d\r\n", len(data)) +
+				"\r\n"
 
 		conn.Write([]byte(response))
+		conn.Write(data)
 		return
 	}
-
-	ext := filepath.Ext(filePath)
-
-	contentType := "text/plain"
-	if ext == ".css" {
-		contentType = "text/css"
-	} else if ext == ".png" {
-		contentType = "image/png"
-	} else if ext == ".jpg" || ext == ".jpeg" {
-		contentType = "image/jpeg"
-	} else if ext == ".ico" {
-		contentType = "image/x-icon"
-	}
-
-	response :=
-		"HTTP/1.1 200 OK\r\n" +
-			"Content-Type: " + contentType + "\r\n" +
-			fmt.Sprintf("Content-Length: %d\r\n", len(data)) +
-			"\r\n"
-
-	conn.Write([]byte(response))
-	conn.Write(data)
-	return
-}
 
 	if route != "/" {
 		body := "<html><body><h1>404 Not Found</h1></body></html>"
@@ -116,10 +119,20 @@ if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
 		return
 	}
 
-	rows, err := db.Query(
-	"SELECT id, name, current_episode, total_episodes FROM series LIMIT ? OFFSET ?",
-	limit, offset,
-)
+	// ORDER BY seguro
+	orderBy := ""
+
+	if sortColumn == "name" {
+		orderBy = " ORDER BY name"
+	} else if sortColumn == "current" {
+		orderBy = " ORDER BY current_episode"
+	} else if sortColumn == "total" {
+		orderBy = " ORDER BY total_episodes"
+	}
+
+	query := "SELECT id, name, current_episode, total_episodes FROM series" + orderBy + " LIMIT ? OFFSET ?"
+
+	rows, err := db.Query(query, limit, offset)
 	if err != nil {
 		return
 	}
@@ -136,25 +149,30 @@ if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
 	html += fmt.Sprintf("<a href='/?page=%d'>Next</a>", page+1)
 
 	html += "</div>"
+
 	html += "<h1>Series que he visto (o estoy viendo)</h1>"
-	html += "<table style='border-collapse: collapse;'>"
-	html += "<tr><th style='border:1px solid black;'>ID</th><th style='border:1px solid black;'>Name</th><th style='border:1px solid black;'>Progress</th></tr>"
+	html += "<table>"
+	html += "<tr>"
+	html += "<th>ID</th>"
+	html += "<th><a href='/?sort=name'>Name</a></th>"
+	html += "<th><a href='/?sort=current'>Progress</a></th>"
+	html += "</tr>"
 
 	for rows.Next() {
-	var id int
-	var name string
-	var current int
-	var total int
+		var id int
+		var name string
+		var current int
+		var total int
 
-	rows.Scan(&id, &name, &current, &total)
+		rows.Scan(&id, &name, &current, &total)
 
-	progress := fmt.Sprintf("%d / %d", current, total)
+		progress := fmt.Sprintf("%d / %d", current, total)
 
-	html += fmt.Sprintf(
-	"<tr><td>%d</td><td>%s</td><td>%s</td></tr>",
-	id, name, progress,
-)
-}
+		html += fmt.Sprintf(
+			"<tr><td>%d</td><td>%s</td><td>%s</td></tr>",
+			id, name, progress,
+		)
+	}
 
 	html += "</table>"
 	html += "</body></html>"

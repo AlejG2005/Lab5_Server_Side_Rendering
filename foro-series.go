@@ -156,8 +156,8 @@ if strings.HasPrefix(path, "/static/") || path == "/favicon.ico" {
 )
 }
 
-	html += "<table>"
-	html += "<tr><th>ID</th><th>Name</th><th>Progress</th></tr>"
+	html += "</table>"
+	html += "</body></html>"
 
 	response :=
 		"HTTP/1.1 200 OK\r\n" +
